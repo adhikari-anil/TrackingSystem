@@ -1,44 +1,89 @@
 const socket = io();
 
-// check if the browser supports geolocation..
+// Store self ID
+let selfId = null;
+const markers = {};
 
-if(navigator.geolocation){
-    navigator.geolocation.watchPosition((position)=>{
-        const {latitude,longitude} = position.coords;
-        console.log(latitude,longitude);
-        socket.emit("send-location", {latitude,longitude});
-    },(error)=>{
-        console.error(error);
-    },{
-        enableHighAccuracy: true,
-        timeout: 5000,
-        maximumAge: 0,    //take new data not from cache 
-    });
-}
-
-//Init a map centered at coordinate (0,0) with zoom level 15 using leaflet & add OpenStreetMap titles to map
-const map = L.map("map").setView([0,0],16);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{
-    attribution: "MeroMap"
+// Initialize map with default center (will be updated when we get location)
+const map = L.map("map").setView([0, 0], 16);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: "MeroMap",
 }).addTo(map);
 
-// empty object marker
-const marker = {};
+// Function to create or update marker
+function updateMarker(id, latitude, longitude, isSelf = false) {
+  if (markers[id]) {
+    markers[id].setLatLng([latitude, longitude]);
+  } else {
+    // Different icons for self vs others
+    const markerIcon = isSelf
+      ? L.icon({
+          iconUrl:
+            "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png",
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+        })
+      : L.icon({
+          iconUrl:
+            "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+        });
 
-socket.on("receive-location",(data)=>{
-    const {id, latitude, longitude} = data;
-    console.log(latitude, longitude);
-    map.setView([latitude,longitude]);
-    if(marker[id]){
-        marker[id].setLatLng([latitude, longitude]);
-    }else{
-        marker[id] = L.marker([latitude,longitude]).addTo(map);
+    markers[id] = L.marker([latitude, longitude], { icon: markerIcon }).addTo(
+      map
+    );
+    markers[id].bindPopup(isSelf ? "You are here" : "Other user");
+  }
+}
+
+// Handle geolocation
+if (navigator.geolocation) {
+  navigator.geolocation.watchPosition(
+    (position) => {
+      const { latitude, longitude } = position.coords;
+
+      // Emit location to server
+      socket.emit("send-location", {
+        latitude,
+        longitude,
+        timestamp: Date.now(), // Add timestamp for tracking
+      });
+
+      // Update self marker and center map only for self
+      if (selfId) {
+        updateMarker(selfId, latitude, longitude, true);
+        map.setView([latitude, longitude]);
+      }
+    },
+    (error) => {
+      console.error("Geolocation error:", error);
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 5000,
+      maximumAge: 0,
     }
+  );
+}
+
+// Socket event handlers
+socket.on("connect", () => {
+  selfId = socket.id;
 });
 
-socket.on("user-disconnected",(id)=>{
-    if(marker[id]){
-        map.removeLayer(marker[id]);
-        delete marker[id];
-    }
-})
+socket.on("receive-location", (data) => {
+  const { id, latitude, longitude } = data;
+
+  // Only update other users' markers if it's not our own location
+  if (id !== selfId) {
+    updateMarker(id, latitude, longitude, false);
+  }
+});
+
+socket.on("user-disconnected", (id) => {
+  if (markers[id]) {
+    map.removeLayer(markers[id]);
+    delete markers[id];
+  }
+});
